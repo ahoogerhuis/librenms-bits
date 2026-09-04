@@ -1,0 +1,81 @@
+# librenms-winrm-proxy config
+#
+# Bare-metal/systemd deployment: copy to /etc/librenms-winrm-proxy/config.yml
+# on the proxy host and edit.
+#
+# Container deployment (see docker-compose.yml): copy to
+# proxy/secrets/config.yml instead, and set tls_cert/tls_key below to
+# /run/secrets/proxy_tls_cert and /run/secrets/proxy_tls_key -- those
+# are where compose mounts the secrets defined in docker-compose.yml,
+# not the /etc/... paths below (those are the bare-metal convention).
+
+listen_addr: 0.0.0.0
+listen_port: 8443
+
+# Proxy's own server certificate, presented to LibreNMS pollers.
+# Bare-metal path shown; container deployment uses /run/secrets/proxy_tls_cert
+# and /run/secrets/proxy_tls_key instead (see note above).
+tls_cert: /etc/librenms-winrm-proxy/tls/server.crt
+tls_key: /etc/librenms-winrm-proxy/tls/server.key
+
+# token or mtls
+auth_mode: token
+
+# --- token mode ---
+# Static pre-shared bearer token, opaque random 32+ bytes.
+# Generate with: openssl rand -hex 32
+token: "REPLACE_ME_32_BYTES_MINIMUM_RANDOM_HEX"
+
+# --- mtls mode (comment out token above, uncomment below) ---
+# allowed_client_ca: /etc/librenms-winrm-proxy/tls/client-ca.pem
+# # SHA-256 fingerprint of the CA file above, pinned so a swapped file
+# # at this path fails closed instead of being silently trusted.
+# # Generate with: openssl x509 -in client-ca.pem -noout -fingerprint -sha256
+# allowed_client_ca_fingerprint: "REPLACE_ME"
+
+# Only set true for local dev with no CA configured in mtls mode.
+# NEVER set true in production -- this is encrypted-but-unauthenticated.
+insecure_dev_mode: false
+
+# --- Concurrency limiting + explicit WinRM timeouts (all optional, shown
+# with their defaults) ---
+# The /check endpoint is a sync FastAPI handler: each in-flight WinRM
+# call ties up a worker thread for its full duration. With many hosts
+# unreachable at once (a firewall change, a DC outage affecting
+# Kerberos fleet-wide), unbounded concurrent connection attempts can
+# exhaust every worker thread, making the proxy unresponsive even to
+# healthy hosts. See docs/WINRM_PROXY_CONCURRENCY.md (librenms-fork)
+# for the full design/tradeoffs.
+#
+# Max outbound WinRM connection attempts in flight at once, across the
+# whole proxy (not per-host) -- bounds worst-case thread usage
+# directly, regardless of how many hosts go dark simultaneously.
+# max_concurrent_connections: 10
+#
+# How long a request waits for a free connection slot before giving up
+# with a clear error, rather than queuing indefinitely.
+# connection_queue_timeout_seconds: 30
+#
+# Passed straight through to pypsrp's WSMan -- these were previously
+# left as pypsrp's own unstated implicit defaults (same values shown
+# here); now explicit and tunable.
+# winrm_operation_timeout_seconds: 20
+# winrm_connection_timeout_seconds: 30
+# winrm_read_timeout_seconds: 30
+
+# --- Session pooling (all optional, shown with their defaults) ---
+# Off by default -- reuses a live RunspacePool per host across calls
+# instead of a fresh Kerberos handshake + PSRP negotiation every time,
+# once enabled. Carries real correctness tradeoffs (staleness handling,
+# thread-safety, sizing/eviction) -- see docs/WINRM_PROXY_CONCURRENCY.md
+# (librenms-fork) before turning this on in production.
+# session_pooling_enabled: false
+#
+# Max number of pooled sessions (one per distinct host) kept at once --
+# least-recently-used host is evicted when a new host's session would
+# exceed this.
+# max_pooled_sessions: 50
+#
+# A pooled session unused for longer than this is evicted on the next
+# call, regardless of which host it's for.
+# pooled_session_idle_timeout_seconds: 600

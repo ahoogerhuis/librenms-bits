@@ -1,0 +1,58 @@
+# image/WINRM_PROXY_PRINCIPAL below default to generic placeholders so
+# this file works as a template for any adopter -- a real deployment
+# overrides both via a local .env (gitignored, see .env.example) rather
+# than editing this file in place, so `git pull` never clobbers a real
+# site's values and this committed file never carries them.
+services:
+  winrm-proxy:
+    build: .
+    image: ${WINRM_PROXY_IMAGE:-registry.vpp.local/librenms-winrm-proxy:latest}
+    container_name: librenms-winrm-proxy
+    restart: unless-stopped
+    ports:
+      - "8443:8443"
+    environment:
+      - WINRM_PROXY_CONFIG=/run/secrets/proxy_config
+      - WINRM_PROXY_EXECUTOR=pypsrp
+      - WINRM_PROXY_KEYTAB=/run/secrets/proxy_keytab
+      - WINRM_PROXY_PRINCIPAL=${WINRM_PROXY_PRINCIPAL:-svc-winrmproxy@VPP.LOCAL}
+      - WINRM_PROXY_JEA_CONFIG_NAME=WinrmProbe  # matches Register-PSSessionConfiguration -Name on the target
+    secrets:
+      - proxy_config
+      - proxy_tls_cert
+      - proxy_tls_key
+      - proxy_keytab
+    # krb5.conf has no credential material in it (just realm/KDC
+    # hostnames), a plain bind mount is fine, unlike the secrets above.
+    volumes:
+      - ./secrets/krb5.conf:/etc/krb5.conf:ro
+    # dns:
+    #   - <internal-resolver-ip>  # only needed if the host's own resolver can't see the realm's SRV records
+
+secrets:
+  # The daemon runs as non-root (winrm-proxy, uid 999, pinned explicitly
+  # in the Dockerfile), and this docker-compose build ignores the
+  # `mode`/`uid`/`gid` secret options entirely (warns "not supported"
+  # and does nothing) -- confirmed by actually hitting it, not assumed.
+  # Compose instead preserves each source file's own host permissions
+  # into the container's /run/secrets/ mount as-is.
+  #
+  # DO NOT chmod 644 these -- an earlier version of this file said to,
+  # which made the TLS private key and bearer token world-readable to
+  # every local user on the Docker host, not just this container's
+  # process. Caught and fixed 2026-08-08 (see CONTAINERIZATION.md).
+  # Correct setup, before `docker compose up`:
+  #   chown 999:999 secrets/config.yml secrets/tls/server.key secrets/tls/server.crt
+  #   chmod 600 secrets/config.yml secrets/tls/server.key
+  #   chmod 644 secrets/tls/server.crt   # public cert, fine to be world-readable
+  # 999 must match the Dockerfile's pinned winrm-proxy UID exactly --
+  # Docker doesn't remap container UIDs to the host by default, so file
+  # ownership by that literal number is what actually gates access.
+  proxy_config:
+    file: ./secrets/config.yml
+  proxy_tls_cert:
+    file: ./secrets/tls/server.crt
+  proxy_tls_key:
+    file: ./secrets/tls/server.key
+  proxy_keytab:
+    file: ./secrets/proxy.keytab

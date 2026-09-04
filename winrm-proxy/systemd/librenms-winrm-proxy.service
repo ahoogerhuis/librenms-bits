@@ -1,0 +1,27 @@
+[Unit]
+Description=LibreNMS WinRM proxy (authenticated relay to Windows JEA endpoints)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=librenms-winrm-proxy
+Group=librenms-winrm-proxy
+WorkingDirectory=/opt/librenms-winrm-proxy
+ExecStart=/opt/librenms-winrm-proxy/venv/bin/python -m app.main \
+    --config /etc/librenms-winrm-proxy/config.yml \
+    --executor pypsrp
+Restart=on-failure
+RestartSec=5
+
+# Hardening. ReadWritePaths intentionally narrow -- expand only for
+# whatever the real pypsrp/Kerberos ccache location ends up being
+# once the AD-join work lands.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ReadOnlyPaths=/etc/librenms-winrm-proxy /opt/librenms-winrm-proxy
+
+[Install]
+WantedBy=multi-user.target
