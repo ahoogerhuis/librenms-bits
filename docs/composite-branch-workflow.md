@@ -6,6 +6,7 @@ A workflow for a live LibreNMS install that needs to track real upstream `master
 - [The core pattern](#the-core-pattern)
 - [Staying current with upstream](#staying-current-with-upstream)
 - [The update-script gotcha](#the-update-script-gotcha)
+- [What LibreNMS's own daily.sh and validate.php actually do](#daily-sh-and-validate-php)
 - [Conflict risk and merge order](#conflict-risk-and-merge-order)
 - [Worked example](#worked-example)
 
@@ -41,6 +42,32 @@ git merge origin/master
 Whatever currently updates the live install on a schedule (a nightly update script, a cron job, LibreNMS's own daily maintenance script) most likely assumes a fast-forward-only `git pull` — the standard "plain `master`, no local changes" case. That assumption breaks the moment the branch carries real local merge commits: a fast-forward is no longer possible, and a plain `git pull` will either fail outright or (worse, depending on the configured pull strategy) attempt an unexpected rebase or merge at a moment nobody's watching for the result.
 
 **Read the actual update script before switching a live install over — don't assume it either already handles this or will fail loudly if it doesn't.** Find wherever the update mechanism calls its git commands and confirm what it actually does; if it invokes a plain `git pull` (or relies on `git pull`'s default behavior), change that step specifically to `git fetch` + `git merge origin/master`, matching the manual command above, rather than leaving it to whatever `git pull`'s configured default does once the branch has diverged.
+
+<a id="daily-sh-and-validate-php"></a>
+
+## What LibreNMS's own daily.sh and validate.php actually do
+
+Checked directly against LibreNMS's real source, and verified live against a real composite branch on a test install — worth confirming rather than reasoning about generically, since both of the following look more concerning on first read than they turn out to be in practice.
+
+**`daily.sh` runs a plain `git pull --quiet`** — no `--rebase`, no `--ff-only`. On a genuinely diverged composite branch, the actual behavior depends on your own git config (the default is fetch-then-merge), and the real risk is a genuine merge conflict happening unattended during an automated nightly run, not the script itself doing anything unexpected. `daily.sh` does have a failure-notification path that fires on a non-zero exit, so a conflict during an automated run won't go completely unnoticed — but it's still worth switching the automated step to the explicit `git fetch` + `git merge origin/master` shown above, rather than leaving it to `git pull`'s default behavior once the branch has diverged.
+
+**`./validate.php -g updates` will show two things on a composite branch, both expected, neither a real problem:**
+
+1. **A branch-name warning, every time, by design:**
+   ```
+   [WARN]  Your local git branch is not master, this will prevent automatic updates.
+       [FIX]:
+       You can switch back to master with git checkout master
+   ```
+   This is a direct, unavoidable consequence of never touching `master` itself — LibreNMS's own validator checks the branch name literally, with no exception for a deliberately-composite setup. It isn't a sign anything is wrong; it's LibreNMS correctly observing that you're not on `master`, exactly as this workflow intends.
+
+2. **A staleness check that looks like it should produce a permanent false alarm, but doesn't.** The check compares your local commit hash against the live upstream `master` tip fetched directly from GitHub's API — not your local `origin/master`, not whatever branch happens to be checked out, the real upstream tip specifically. On a composite branch this comparison is essentially always a mismatch, since a merge commit's hash can never equal a plain upstream commit's hash. Read in isolation, that sounds like it would produce a permanent "out of date" warning. It doesn't, because that hash comparison is only a gate — the actual warning fires only if your **local commit's own timestamp** is more than 24 hours old, regardless of what the hash comparison found:
+   ```
+   [WARN]  Your install is over 24 hours out of date, last update: <date>
+       [FIX]:
+       Make sure your daily.sh cron is running and run ./daily.sh by hand to see if there are any errors.
+   ```
+   A composite branch's own merge commit is timestamped the moment the merge runs — so merging `origin/master` in at least once within any 24-hour window resets that clock every time, and this warning never fires for a branch that's actually being kept current. Confirmed live, both directions: a fresh merge on a real composite branch produced no staleness warning at all (only the branch-name warning above), and deliberately backdating a test commit to two days old reproduced the exact warning shown, confirming the check genuinely works — it's just measuring "was there a recent commit," not "are you behind upstream," which happens to be exactly the right signal for a branch maintained this way.
 
 <a id="conflict-risk-and-merge-order"></a>
 
