@@ -22,6 +22,8 @@ Three things, kept deliberately separate:
 
 This is an ordinary merge, not a rebase, and not a cherry-pick chain — the composite branch just accumulates real merge commits over time, same as any other long-lived integration branch.
 
+> **Don't build the second remote on a churn-prone scratch fork.** If your infrastructure already has a fork used for AI-agent experimentation or PR preparation — one that gets rebased or reset routinely as part of that work — don't point a live install's composite branch at it. A live install pulling continuously from a branch that gets rewritten out from under it will break on the very next rebase. This needs its own dedicated fork/branch, used for nothing else.
+
 <a id="staying-current-with-upstream"></a>
 
 ## Staying current with upstream
@@ -49,7 +51,17 @@ Whatever currently updates the live install on a schedule (a nightly update scri
 
 Checked directly against LibreNMS's real source, and verified live against a real composite branch on a test install — worth confirming rather than reasoning about generically, since both of the following look more concerning on first read than they turn out to be in practice.
 
-**`daily.sh` runs a plain `git pull --quiet`** — no `--rebase`, no `--ff-only`. On a genuinely diverged composite branch, the actual behavior depends on your own git config (the default is fetch-then-merge), and the real risk is a genuine merge conflict happening unattended during an automated nightly run, not the script itself doing anything unexpected. `daily.sh` does have a failure-notification path that fires on a non-zero exit, so a conflict during an automated run won't go completely unnoticed — but it's still worth switching the automated step to the explicit `git fetch` + `git merge origin/master` shown above, rather than leaving it to `git pull`'s default behavior once the branch has diverged.
+**`daily.sh`'s decision to update at all is driven by an exit code from `php daily.php -f update`**, confirmed live against a real current install (not just read from source):
+
+- **`0`** — no code update this run: updates disabled outright, today isn't in the configured `update_on_days`, or the channel is unset. Only schema migration and routine cleanup happen.
+- **`2`** — channel is `master`: `daily.sh` runs a plain `git pull` on whatever branch is currently checked out.
+- **`3`** — channel is `release`: instead of pulling anything, it fetches tags, compares versions, and `git checkout`s the latest tag's commit hash directly — landing on a detached HEAD, not a branch at all.
+
+There's no `lnms self-update` command or equivalent standing behind any of this. `daily.sh` *is* the entire update mechanism, not a wrapper around something else.
+
+**This is why `update_channel` has to stay `master` for a composite branch, never `release`.** The release path has no concept of a branch to follow — it looks for the newest upstream *tag* and checks that specific commit out directly, detaching HEAD in the process. A continuously-merged composite branch isn't a tag and never will be, so the release path has nothing to find there; only the `master`-channel branch-following path (a plain `git pull`) has any chance of ever picking up the composite branch's own commits.
+
+**`daily.sh` runs a plain `git pull --quiet`** — no `--rebase`, no `--ff-only`. Worth being explicit about what it does *not* check, too: nowhere in the script is there any awareness of which remote or repo `origin` actually points at — a bare `git pull` just follows whatever the current branch's tracked upstream is in local git config. That's exactly why this whole composite-branch pattern works without touching LibreNMS's own code at all: the update mechanism was never checking repo identity to begin with, only branch state. On a genuinely diverged composite branch, the actual behavior depends on your own git config (the default is fetch-then-merge), and the real risk is a genuine merge conflict happening unattended during an automated nightly run, not the script itself doing anything unexpected. `daily.sh` does have a failure-notification path that fires on a non-zero exit, so a conflict during an automated run won't go completely unnoticed — but it's still worth switching the automated step to the explicit `git fetch` + `git merge origin/master` shown above, rather than leaving it to `git pull`'s default behavior once the branch has diverged.
 
 **`./validate.php -g updates` will show two things on a composite branch, both expected, neither a real problem:**
 
@@ -68,6 +80,8 @@ Checked directly against LibreNMS's real source, and verified live against a rea
        Make sure your daily.sh cron is running and run ./daily.sh by hand to see if there are any errors.
    ```
    A composite branch's own merge commit is timestamped the moment the merge runs — so merging `origin/master` in at least once within any 24-hour window resets that clock every time, and this warning never fires for a branch that's actually being kept current. Confirmed live, both directions: a fresh merge on a real composite branch produced no staleness warning at all (only the branch-name warning above), and deliberately backdating a test commit to two days old reproduced the exact warning shown, confirming the check genuinely works — it's just measuring "was there a recent commit," not "are you behind upstream," which happens to be exactly the right signal for a branch maintained this way.
+
+   This is exactly why the [upstream fetch+merge step](#staying-current-with-upstream) is worth running on an actual schedule rather than only by hand when someone remembers to: if that job stops running, the composite branch's newest commit ages past 24 hours and this warning starts firing for real — correctly surfacing that the update pipeline itself has stalled, rather than being false noise to tune out.
 
 <a id="conflict-risk-and-merge-order"></a>
 
@@ -100,6 +114,10 @@ git merge mine/feature-branch-name
 # since this is the only thing being merged in this step.
 
 # Deploy/run from `composite`, not `master`, from this point on.
+# Make sure the install is actually set to follow a branch, not a tag --
+# see "What LibreNMS's own daily.sh and validate.php actually do" for why
+# `release` doesn't fit a composite branch at all.
+./lnms config:set update_channel master
 ```
 
 Staying current with upstream afterward, on an ongoing basis:
